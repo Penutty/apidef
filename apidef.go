@@ -8,8 +8,6 @@ package apidef
 import (
 	"errors"
 	"fmt"
-	valid "github.com/asaskevich/govalidator"
-	"strconv"
 	"strings"
 )
 
@@ -21,19 +19,21 @@ var (
 	ErrorInvalidMethod             = errors.New("method must be a valid string.")
 	ErrorInvalidName               = errors.New("name must be a valid string.")
 	ErrorInvalidType               = errors.New("type must be a vaild string.")
+	ErrorEmptyString               = errors.New("string value must not be empty.")
 )
 
 type endPointKey struct {
 	path   []byte
-	method []byte
+	method string
 }
 
 type endPoint struct {
 	endPointKey
 	fields []*field
+	tests  []string
 }
 
-func NewEndpoint(path []byte, method []byte) *endPoint {
+func NewEndpoint(path []byte, method string) *endPoint {
 	switch {
 	case len(path) <= 0:
 		panic(ErrorInvalidPath)
@@ -49,33 +49,88 @@ func NewEndpoint(path []byte, method []byte) *endPoint {
 	}
 }
 
-func (e *endPoint) Tests() {
-	testType := string(append(strings.ToUpper(e.method), e.path[1:]...)) + "Test"
-
-	fieldErrors = make([]string, len(e.fields))
+func (e *endPoint) Test(err string, testVals ...string) {
+	var vals []string
+	if len(testVals) != len(e.fields) {
+		vals = make([]string, len(e.fields))
+		for i := 0; i < len(vals); i++ {
+			vals[i] = testVals[i]
+		}
+	}
+	testBody := make([]string, len(e.fields))
 	for i, f := range e.fields {
-		fieldErrors[i] = f.Errors()
+		testBody[i] = fmt.Sprintf("\t\t\t\t\"%s\": \"%s\"", f.name, vals[i])
 	}
 
-	fieldTests = make([]string, len(e.fields))
+	e.tests = append(e.tests, fmt.Sprintf(
+		"\t&%s{\n"+
+			"\t\thttptest.NewRequest(%s, \"%s\",\n"+
+			"\t\t\tstrings.NewReader(`{\n"+
+			"%s\n"+
+			"\t\t\t}`)),\n"+
+			"\t\t%s,\n"+
+			"\t},\n", e.testType(), e.method, e.path, strings.Join(testBody, ",\n"), err))
+}
+
+func (e *endPoint) Tests() {
+	fmt.Printf("tests := []*%s{\n"+
+		"%s"+
+		"}\n", e.testType(), strings.Join(e.tests, "\n"))
+}
+
+func (e *endPoint) PassingTests() {
+	type set struct {
+		val     string
+		passing bool
+	}
+
+	m := make(map[string][]*set)
+
 	for _, f := range e.fields {
-		fieldTests[i] = f.Tests()
+		for _, v := range f.validators {
+			for _, p := range v.pVals {
+				s := &set{
+					val:     p,
+					passing: true,
+				}
+				m[f.name] = append(m[f.name], s)
+			}
+			for _, n := range v.fVals {
+				s := &set{
+					val:     n,
+					passing: true,
+				}
+				m[f.name] = append(m[f.name], s)
+			}
+		}
 	}
 
-	fmt.Printf(`
-var (
-%s
-)
+	fmt.Printf("%v\n", m)
+	fmt.Printf("\n\n")
 
-type %s struct {
-	req *http.Request
- 	err error
+	for i, ss := range m {
+		for j, s := range ss {
+			fmt.Printf("\"%s\": \"%s\"\n", i, s.val)
+			for l, ss2 := range m {
+				if i == l {
+					continue
+				}
+				for k, s2 := range ss2 {
+					if j == k {
+						continue
+					}
+					fmt.Printf("\"%s\": \"%s\"\n", l, s2.val)
+				}
+			}
+			fmt.Printf("\n\n")
+		}
+
+	}
+
 }
 
-tests := []*%s {
-%s
-}
-`, strings.Join(fieldErrors, "\n"), testType, testType, strings.Join(fieldTests))
+func (e *endPoint) testType() string {
+	return strings.ToUpper(e.method) + string(e.path[1:]) + "Test"
 }
 
 func (e *endPoint) Struct() {
@@ -84,16 +139,15 @@ func (e *endPoint) Struct() {
 		fmt.Printf("%s\n", f)
 	}
 	fmt.Printf("}\n")
-
 }
 
 type field struct {
-	name       []byte
-	Type       []byte
+	name       string
+	Type       string
 	validators []*validField
 }
 
-func (e *endPoint) NewField(name []byte, Type []byte) *field {
+func (e *endPoint) NewField(name string, Type string) *field {
 	switch {
 	case len(name) <= 0:
 		panic(ErrorInvalidName)
@@ -117,106 +171,65 @@ func (f *field) String() string {
 	return fmt.Sprintf("\t%s %s `valid: \"%s\"`", f.name, f.Type, strings.Join(vs, ","))
 }
 
-func (f *field) Errors() string {
-	validatorsErrors := make([]string, len(f))
-	for i, v := range f.validators {
-		validatorsErrors[i] = v.Errors()
-	}
-	return strings.Join(validatorsErrors, "\n")
-}
-
-func (f *field) Tests() string {
-	validatorsTests := make([]string, len(f))
-	for i, v := range f.validators {
-		validatorsTests[i] = v.Tests()
-	}
-	return Sprintf(`
-	&postUserTest{
-		http.test.NewRequest(http.MethodPost, "/user", 
-			strings.NewReader("{
-				%s
-			}")),
-		ErrorApiDef%s,
-	},
-	)`, strings.Join(validatorsTests, ",\n"), f.name)
-}
-
 type validField struct {
-	name     []byte
-	min      uint64
-	max      uint64
-	passVals []string
-	failVals []string
+	name   string
+	params []string
+	pVals  []string
+	fVals  []string
+}
+
+func (v *validField) PassWith(s ...string) *validField {
+	if len(s) == 0 {
+		panic(ErrorEmptyString)
+	}
+
+	v.pVals = append(v.pVals, s...)
+	return v
+}
+
+func (v *validField) FailWith(s ...string) *validField {
+	if len(s) == 0 {
+		panic(ErrorEmptyString)
+	}
+
+	v.fVals = append(v.fVals, s...)
+	return v
 }
 
 func (v *validField) String() string {
 	if v.hasParams() {
-		return fmt.Sprintf("%s(%v|%v)", v.name, strconv.Itoa(int(v.min)), strconv.Itoa(int(v.max)))
+		return fmt.Sprintf("%s(%s)", v.name, strings.Join(v.params, "|"))
 	} else {
 		return fmt.Sprintf("%s", v.name)
 	}
 }
 
-func (v *validField) Errors() string {
-	return fmt.Sprintf("\tErrorApiDef%s = errors.New(\"Invalid field. Criteria \"%s\" not met.\")", string(v.name), string(v.name))
-}
-
-func (v *validField) Tests() string {
-	if len(def) <= 0 {
-		panic(ErrorInvalidDefault)
-	}
-
-	if v.hasParams() {
-
-	} else {
-
-	}
-}
-
 func (v *validField) hasParams() bool {
-	if v.min == 0 &&
-		v.max == 0 &&
-		len(v.passVal) <= 0 &&
-		len(v.failVal) == 0 {
+	if len(v.params) == 0 {
 		return false
 	}
 	return true
 }
 
-func (v *validField) PassWith(val string) *validField {
-	v.passVals = append(v.passVals, val)
-	return v
-}
-
-func (v *validField) FailWith(val string) *validField {
-	v.failVals = append(v.failVals, val)
-	return v
-}
-
-func (f *field) NewValidField(name []byte) *validField {
+func (f *field) NewValidField(name string, params ...string) *validField {
 	switch {
 	case len(name) <= 0:
 		panic(ErrorInvalidName)
 	}
 
-	vf := &validField{
-		name: name,
+	vf := new(validField)
+	if len(params) == 0 {
+		vf = &validField{
+			name: name,
+		}
+	} else {
+		vf = &validField{
+			name:   name,
+			params: params,
+		}
 	}
 
 	f.validators = append(f.validators, vf)
 	return vf
-}
 
-func (f *field) NewValidFieldParams(name []byte, min uint64, max uint64) *validField {
-	if len(name) <= 0 {
-		panic(ErrorInvalidName)
-	}
-
-	vf := &validField{
-		name: name,
-		min:  min,
-		max:  max,
-	}
-	f.validators = append(f.validators, vf)
-	return vf
 }
