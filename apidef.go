@@ -30,7 +30,6 @@ type endPointKey struct {
 type endPoint struct {
 	endPointKey
 	fields []*field
-	tests  []string
 }
 
 func NewEndpoint(path []byte, method string) *endPoint {
@@ -49,84 +48,46 @@ func NewEndpoint(path []byte, method string) *endPoint {
 	}
 }
 
-func (e *endPoint) Test(err string, testVals ...string) {
-	var vals []string
-	if len(testVals) != len(e.fields) {
-		vals = make([]string, len(e.fields))
-		for i := 0; i < len(vals); i++ {
-			vals[i] = testVals[i]
-		}
-	}
-	testBody := make([]string, len(e.fields))
+func (e *endPoint) Tests() {
+	fieldTvals := make([][]*testVal, len(e.fields))
 	for i, f := range e.fields {
-		testBody[i] = fmt.Sprintf("\t\t\t\t\"%s\": \"%s\"", f.name, vals[i])
+		fieldTvals[i] = f.testVals
 	}
 
-	e.tests = append(e.tests, fmt.Sprintf(
+	fmt.Printf("tests := []*%s{\n", e.testType())
+	e.testCombs(fieldTvals, make([]*testVal, 0))
+	fmt.Printf("}\n")
+}
+
+func (e *endPoint) test(ts []*testVal) {
+	passing := "true"
+	ss := make([]string, len(ts))
+	for i, t := range ts {
+		ss[i] = fmt.Sprintf("\t\t\t\t\"%s\": \"%s\"", t.field, t.val)
+		if t.passing == false {
+			passing = "false"
+		}
+	}
+	fmt.Printf(
 		"\t&%s{\n"+
 			"\t\thttptest.NewRequest(%s, \"%s\",\n"+
 			"\t\t\tstrings.NewReader(`{\n"+
 			"%s\n"+
 			"\t\t\t}`)),\n"+
 			"\t\t%s,\n"+
-			"\t},\n", e.testType(), e.method, e.path, strings.Join(testBody, ",\n"), err))
+			"\t},\n", e.testType(), e.method, e.path, strings.Join(ss, ",\n"), passing)
 }
 
-func (e *endPoint) Tests() {
-	fmt.Printf("tests := []*%s{\n"+
-		"%s"+
-		"}\n", e.testType(), strings.Join(e.tests, "\n"))
-}
-
-func (e *endPoint) PassingTests() {
-	type set struct {
-		val     string
-		passing bool
-	}
-
-	m := make(map[string][]*set)
-
-	for _, f := range e.fields {
-		for _, v := range f.validators {
-			for _, p := range v.pVals {
-				s := &set{
-					val:     p,
-					passing: true,
-				}
-				m[f.name] = append(m[f.name], s)
-			}
-			for _, n := range v.fVals {
-				s := &set{
-					val:     n,
-					passing: true,
-				}
-				m[f.name] = append(m[f.name], s)
-			}
+func (e *endPoint) testCombs(m [][]*testVal, ts []*testVal) {
+	if len(m) == 1 {
+		for _, v := range m[0] {
+			e.test(append(ts, v))
 		}
+		return
 	}
-
-	fmt.Printf("%v\n", m)
-	fmt.Printf("\n\n")
-
-	for i, ss := range m {
-		for j, s := range ss {
-			fmt.Printf("\"%s\": \"%s\"\n", i, s.val)
-			for l, ss2 := range m {
-				if i == l {
-					continue
-				}
-				for k, s2 := range ss2 {
-					if j == k {
-						continue
-					}
-					fmt.Printf("\"%s\": \"%s\"\n", l, s2.val)
-				}
-			}
-			fmt.Printf("\n\n")
-		}
-
+	for _, v := range m[0] {
+		e.testCombs(m[1:], append(ts, v))
 	}
-
 }
 
 func (e *endPoint) testType() string {
@@ -141,9 +102,16 @@ func (e *endPoint) Struct() {
 	fmt.Printf("}\n")
 }
 
+type testVal struct {
+	field   string
+	val     string
+	passing bool
+}
+
 type field struct {
 	name       string
 	Type       string
+	testVals   []*testVal
 	validators []*validField
 }
 
@@ -171,29 +139,29 @@ func (f *field) String() string {
 	return fmt.Sprintf("\t%s %s `valid: \"%s\"`", f.name, f.Type, strings.Join(vs, ","))
 }
 
+func (f *field) PassWith(s ...string) *field {
+	if len(s) == 0 {
+		panic(ErrorEmptyString)
+	}
+	for _, v := range s {
+		f.testVals = append(f.testVals, &testVal{field: f.name, val: v, passing: true})
+	}
+	return f
+}
+
+func (f *field) FailWith(s ...string) *field {
+	if len(s) == 0 {
+		panic(ErrorEmptyString)
+	}
+	for _, v := range s {
+		f.testVals = append(f.testVals, &testVal{field: f.name, val: v, passing: false})
+	}
+	return f
+}
+
 type validField struct {
 	name   string
 	params []string
-	pVals  []string
-	fVals  []string
-}
-
-func (v *validField) PassWith(s ...string) *validField {
-	if len(s) == 0 {
-		panic(ErrorEmptyString)
-	}
-
-	v.pVals = append(v.pVals, s...)
-	return v
-}
-
-func (v *validField) FailWith(s ...string) *validField {
-	if len(s) == 0 {
-		panic(ErrorEmptyString)
-	}
-
-	v.fVals = append(v.fVals, s...)
-	return v
 }
 
 func (v *validField) String() string {
@@ -211,7 +179,7 @@ func (v *validField) hasParams() bool {
 	return true
 }
 
-func (f *field) NewValidField(name string, params ...string) *validField {
+func (f *field) NewValidField(name string, params ...string) *field {
 	switch {
 	case len(name) <= 0:
 		panic(ErrorInvalidName)
@@ -230,6 +198,6 @@ func (f *field) NewValidField(name string, params ...string) *validField {
 	}
 
 	f.validators = append(f.validators, vf)
-	return vf
+	return f
 
 }

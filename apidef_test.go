@@ -5,32 +5,37 @@ import (
 )
 
 var (
-	tpath        = []byte("/path")
-	tmethod      = "method"
-	tfield       = "field"
-	tfield2      = "field2"
-	tvalidField  = "validator"
-	tvalidField2 = "validator2"
-	tType        = "string"
-	pVal         = "pass"
-	pVal2        = "pass2"
-	fVal         = "fail"
-	fVal2        = "fail2"
-	fVal3        = "fail3"
+	tpath   = []byte("/path")
+	tmethod = "method"
 )
 
 func Test_NewEndpoint(t *testing.T) {
 	endpoint := NewEndpoint(tpath, tmethod)
-	_ = endpoint.NewField(tfield, tType).NewValidField(tvalidField).PassWith(pVal, pVal2).FailWith(fVal, fVal2, fVal3)
-	_ = endpoint.NewField(tfield2, tType).NewValidField(tvalidField2).PassWith(pVal).FailWith(fVal)
+	f := endpoint.NewField("name", "string").PassWith("James123", "user333598").FailWith("user123", "123", "")
+	_ = f.NewValidField("alphanumeric").NewValidField("length", "8", "64")
 
-	//	expected := "type body struct {\n" +
-	//		"\ttestfield string `valid: \"alpha\"\n" +
-	//		"}\n"
+	f = endpoint.NewField("email", "string").PassWith("user@email.com", "jamees@gmail.com").FailWith("notanemail", "1@m.com")
+	_ = f.NewValidField("email").NewValidField("length", "8", "64")
+
+	f = endpoint.NewField("password", "string").PassWith("abc123!!??").FailWith("user", "", "12345678")
+	_ = f.NewValidField("alphanumeric").NewValidField("length", "8", "64")
+
+	f = endpoint.NewField("something", "int").PassWith("23").FailWith("aaa")
+	_ = f.NewValidField("numeric")
+
 	endpoint.Struct()
 
-	endpoint.Test("nil", "james123", "useremail@email.com", "testspass")
 	endpoint.Tests()
 
-	endpoint.PassingTests()
 }
+
+// field 1
+// pass
+// pass2
+// fail
+// fail2
+// fail3
+
+// field 2
+// pass
+// fail
