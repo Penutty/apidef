@@ -8,6 +8,7 @@ package apidef
 import (
 	"errors"
 	"fmt"
+	"io"
 	"strings"
 )
 
@@ -27,12 +28,12 @@ type endPointKey struct {
 	method string
 }
 
-type endPoint struct {
+type EndPoint struct {
 	endPointKey
 	fields []*field
 }
 
-func NewEndpoint(path []byte, method string) *endPoint {
+func NewEndpoint(path []byte, method string) *EndPoint {
 	switch {
 	case len(path) <= 0:
 		panic(ErrorInvalidPath)
@@ -40,7 +41,7 @@ func NewEndpoint(path []byte, method string) *endPoint {
 		panic(ErrorInvalidMethod)
 	}
 
-	return &endPoint{
+	return &EndPoint{
 		endPointKey: endPointKey{
 			path:   path,
 			method: method,
@@ -48,18 +49,22 @@ func NewEndpoint(path []byte, method string) *endPoint {
 	}
 }
 
-func (e *endPoint) Tests() {
+func (e *EndPoint) Tests(w io.Writer) {
 	fieldTvals := make([][]*testVal, len(e.fields))
 	for i, f := range e.fields {
 		fieldTvals[i] = f.testVals
 	}
 
-	fmt.Printf("tests := []*%s{\n", e.testType())
-	e.testCombs(fieldTvals, make([]*testVal, 0))
-	fmt.Printf("}\n")
+	fmt.Fprintf(w, "type %s struct {\n"+
+		"\treq *http.Request\n"+
+		"\tpassing bool\n"+
+		"}\n", e.testType())
+	fmt.Fprintf(w, "tests := []*%s{\n", e.testType())
+	fmt.Fprintf(w, "%s", e.testCombs(fieldTvals, make([]*testVal, 0)))
+	fmt.Fprintf(w, "}\n")
 }
 
-func (e *endPoint) test(ts []*testVal) {
+func (e *EndPoint) test(ts []*testVal) string {
 	passing := "true"
 	ss := make([]string, len(ts))
 	for i, t := range ts {
@@ -68,38 +73,40 @@ func (e *endPoint) test(ts []*testVal) {
 			passing = "false"
 		}
 	}
-	fmt.Printf(
+	return fmt.Sprintf(
 		"\t&%s{\n"+
 			"\t\thttptest.NewRequest(%s, \"%s\",\n"+
-			"\t\t\tstrings.NewReader(`{\n"+
-			"%s\n"+
+			"\t\t\tstrings.NewReader(`{\n"+"%s\n"+
 			"\t\t\t}`)),\n"+
 			"\t\t%s,\n"+
 			"\t},\n", e.testType(), e.method, e.path, strings.Join(ss, ",\n"), passing)
 }
 
-func (e *endPoint) testCombs(m [][]*testVal, ts []*testVal) {
+func (e *EndPoint) testCombs(m [][]*testVal, ts []*testVal) string {
 	if len(m) == 1 {
+		var s string
 		for _, v := range m[0] {
-			e.test(append(ts, v))
+			s += e.test(append(ts, v))
 		}
-		return
+		return s
 	}
+	var s string
 	for _, v := range m[0] {
-		e.testCombs(m[1:], append(ts, v))
+		s += e.testCombs(m[1:], append(ts, v))
 	}
+	return s
 }
 
-func (e *endPoint) testType() string {
+func (e *EndPoint) testType() string {
 	return strings.ToUpper(e.method) + string(e.path[1:]) + "Test"
 }
 
-func (e *endPoint) Struct() {
-	fmt.Printf("type body struct {\n")
+func (e *EndPoint) Struct(w io.Writer) {
+	fmt.Fprintf(w, "type body struct {\n")
 	for _, f := range e.fields {
-		fmt.Printf("%s\n", f)
+		fmt.Fprintf(w, "%s\n", f)
 	}
-	fmt.Printf("}\n")
+	fmt.Fprintf(w, "}\n")
 }
 
 type testVal struct {
@@ -115,7 +122,7 @@ type field struct {
 	validators []*validField
 }
 
-func (e *endPoint) NewField(name string, Type string) *field {
+func (e *EndPoint) NewField(name string, Type string) *field {
 	switch {
 	case len(name) <= 0:
 		panic(ErrorInvalidName)
